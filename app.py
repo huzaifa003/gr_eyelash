@@ -6,6 +6,25 @@ import os
 
 # Load the dlib models
 detector = dlib.get_frontal_face_detector()
+
+# Function to download the model if not present
+def download_model():
+    model_url = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
+    model_path = 'shape_predictor_68_face_landmarks.dat'
+    if not os.path.exists(model_path):
+        import bz2
+        import requests
+        print("Downloading model...")
+        response = requests.get(model_url)
+        with open('temp.dat.bz2', 'wb') as f:
+            f.write(response.content)
+        with bz2.BZ2File('temp.dat.bz2') as fr, open(model_path, 'wb') as fw:
+            fw.write(fr.read())
+        os.remove('temp.dat.bz2')
+    else:
+        print("Model already exists.")
+
+download_model()
 predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
 
 # Function to extract eye measurements
@@ -140,13 +159,17 @@ def overlay_lash(image, eye_landmarks, lash_image_path):
     lash_resized = cv2.resize(lash_image, (eye_width, eye_height))
 
     # Extract the alpha mask of the lash image
-    alpha_s = lash_resized[:, :, 3] / 255.0
-    alpha_l = 1.0 - alpha_s
+    if lash_resized.shape[2] == 4:
+        alpha_s = lash_resized[:, :, 3] / 255.0
+        alpha_l = 1.0 - alpha_s
 
-    # Overlay the lash image
-    for c in range(0, 3):
-        image[y_min:y_max, x_min:x_max, c] = (alpha_s * lash_resized[:, :, c] +
-                                              alpha_l * image[y_min:y_max, x_min:x_max, c])
+        # Overlay the lash image
+        for c in range(0, 3):
+            image[y_min:y_max, x_min:x_max, c] = (alpha_s * lash_resized[:, :, c] +
+                                                  alpha_l * image[y_min:y_max, x_min:x_max, c])
+    else:
+        # If no alpha channel, just overlay
+        image[y_min:y_max, x_min:x_max] = lash_resized
 
 # Gradio Interface Function
 def process_image(image_in, style_preference):
@@ -156,11 +179,12 @@ def process_image(image_in, style_preference):
     # Extract measurements and recommendations
     eye_measurements = extract_eye_measurements(image)
     if 'error' in eye_measurements:
-        return "No faces detected", None
+        return "No faces detected", None, None
 
     lash_recommendations = recommend_lashes(eye_measurements, style_preference=style_preference)
 
-    # Visualization
+    # Prepare detailed information
+    details = ""
     for eye in eye_measurements.keys():
         data = eye_measurements[eye]
         rec = lash_recommendations[eye]
@@ -178,21 +202,34 @@ def process_image(image_in, style_preference):
         lash_image_path = select_lash_image(rec)
         overlay_lash(image, data['landmarks'], lash_image_path)
 
+        # Append details for each eye
+        details += f"**{eye.capitalize()} Eye Details:**\n"
+        details += f"- Measurements:\n"
+        details += f"  - Width: {data['width']:.2f}\n"
+        details += f"  - Height: {data['height']:.2f}\n"
+        details += f"  - EAR: {data['aspect_ratio']:.2f}\n"
+        details += f"- Shape: {data['shape']}\n"
+        details += f"- Recommended Lash:\n"
+        details += f"  - Length: {rec['length']:.2f}\n"
+        details += f"  - Curl: {rec['curl']}\n"
+        details += f"  - Volume: {rec['volume']}\n\n"
+
     # Convert back to PIL Image
     image_out = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    return None, image_out
+    return None, details, image_out
 
 # Create Gradio Interface
 style_options = ['Natural', 'Dramatic', 'Subtle']
 iface = gr.Interface(
     fn=process_image,
     inputs=[
-        gr.inputs.Image(type="pil", label="Upload an Image"),
-        gr.inputs.Radio(style_options, label="Style Preference")
+        gr.Image(type="pil", label="Upload an Image"),
+        gr.Radio(style_options, label="Style Preference")
     ],
     outputs=[
-        gr.outputs.Textbox(label="Message"),
-        gr.outputs.Image(type="pil", label="Processed Image")
+        gr.Textbox(label="Message"),
+        gr.Markdown(label="Details"),
+        gr.Image(type="pil", label="Processed Image")
     ],
     title="Eyelash Recommendation",
     description="Upload an image, and get eyelash recommendations based on your eye shape."
